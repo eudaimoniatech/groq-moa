@@ -14,7 +14,36 @@ from langchain_core.output_parsers import StrOutputParser
 
 from .prompts import SYSTEM_PROMPT, REFERENCE_SYSTEM_PROMPT
 
+import time
+import random
+from functools import wraps
+from groq import RateLimitError
+import logging
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def retry_with_exponential_backoff(
+    func,
+    max_retries=5,
+    base_delay=1,
+    max_delay=60,
+    backoff_factor=2,
+):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        retries = 0
+        while retries < max_retries:
+            try:
+                return func(*args, **kwargs)
+            except RateLimitError as e:
+                if retries == max_retries - 1:
+                    raise e
+                delay = min(base_delay * (backoff_factor ** retries) + random.uniform(0, 1), max_delay)
+                logger.warning(f"Rate limit reached. Retrying in {delay:.2f} seconds...")
+                time.sleep(delay)
+                retries += 1
+    return wrapper
 
 class MOAgentConfig(BaseModel):
     main_model: Optional[str] = None
@@ -42,7 +71,6 @@ class ResponseChunk(TypedDict):
     delta: str
     response_type: Literal['intermediate', 'output']
     metadata: Dict[str, Any]
-
 
 class MOAgent:
     def __init__(
@@ -147,6 +175,20 @@ class MOAgent:
         chain = prompt | llm | StrOutputParser()
         return chain
 
+    @retry_with_exponential_backoff
+    def _invoke_layer_agent(self, llm_inp):
+        return self.layer_agent.invoke(llm_inp)
+
+    def _fallback_invoke(self, llm_inp, fallback_models):
+        for model in fallback_models:
+            try:
+                logger.info(f"Attempting to use fallback model: {model}")
+                fallback_agent = self._create_agent_from_system_prompt(model_name=model)
+                return fallback_agent.invoke(llm_inp)
+            except Exception as e:
+                logger.warning(f"Fallback to {model} failed: {str(e)}")
+        raise Exception("All fallback models failed")
+
     def chat(
         self, 
         input: str,
@@ -161,37 +203,77 @@ class MOAgent:
             'messages': messages or self.chat_memory.load_memory_variables({})['messages'],
             'helper_response': ""
         }
+        fallback_models = ['llama3-8b-8192', 'gemma-7b-it', 'mixtral-8x7b-32768']
+        
         for cyc in range(cycles):
-            layer_output = self.layer_agent.invoke(llm_inp)
-            l_frm_resp = layer_output['formatted_response']
-            l_resps = layer_output['responses']
+            try:
+                layer_output = self._invoke_layer_agent(llm_inp)
+                l_frm_resp = layer_output['formatted_response']
+                l_resps = layer_output['responses']
+                
+                llm_inp = {
+                    'input': input,
+                    'messages': self.chat_memory.load_memory_variables({})['messages'],
+                    'helper_response': l_frm_resp
+                }
+
+                if output_format == 'json':
+                    for l_out in l_resps:
+                        yield ResponseChunk(
+                            delta=l_out,
+                            response_type='intermediate',
+                            metadata={'layer': cyc + 1}
+                        )
+            except RateLimitError:
+                logger.warning("Rate limit reached. Attempting fallback...")
+                try:
+                    layer_output = self._fallback_invoke(llm_inp, fallback_models)
+                    l_frm_resp = layer_output['formatted_response']
+                    l_resps = layer_output['responses']
+                    
+                    llm_inp = {
+                        'input': input,
+                        'messages': self.chat_memory.load_memory_variables({})['messages'],
+                        'helper_response': l_frm_resp
+                    }
+
+                    if output_format == 'json':
+                        for l_out in l_resps:
+                            yield ResponseChunk(
+                                delta=l_out,
+                                response_type='intermediate',
+                                metadata={'layer': cyc + 1, 'fallback': True}
+                            )
+                except Exception as e:
+                    logger.error(f"Fallback failed: {str(e)}")
+                    continue
+            except Exception as e:
+                logger.error(f"Error in layer {cyc + 1}: {str(e)}")
+                continue
             
-            llm_inp = {
-                'input': input,
-                'messages': self.chat_memory.load_memory_variables({})['messages'],
-                'helper_response': l_frm_resp
-            }
+            # Add a delay between API calls
+            time.sleep(3)
 
-            if output_format == 'json':
-                for l_out in l_resps:
-                    yield ResponseChunk(
-                        delta=l_out,
-                        response_type='intermediate',
-                        metadata={'layer': cyc + 1}
-                    )
+        try:
+            stream = self.main_agent.stream(llm_inp)
+            response = ""
+            for chunk in stream:
+                if output_format == 'json':
+                        yield ResponseChunk(
+                            delta=chunk,
+                            response_type='output',
+                            metadata={}
+                        )
+                else:
+                    yield chunk
+                response += chunk
 
-        stream = self.main_agent.stream(llm_inp)
-        response = ""
-        for chunk in stream:
-            if output_format == 'json':
-                    yield ResponseChunk(
-                        delta=chunk,
-                        response_type='output',
-                        metadata={}
-                    )
-            else:
-                yield chunk
-            response += chunk
-
-        if save:
-            self.chat_memory.save_context({'input': input}, {'output': response})
+            if save:
+                self.chat_memory.save_context({'input': input}, {'output': response})
+        except Exception as e:
+            logger.error(f"Error in main agent: {str(e)}")
+            yield ResponseChunk(
+                delta="An error occurred while processing your request.",
+                response_type='output',
+                metadata={'error': str(e)}
+            )

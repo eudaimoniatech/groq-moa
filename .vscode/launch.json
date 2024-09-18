@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Streamlit: Run app.py",
+            "type": "python",
+            "request": "launch",
+            "program": "/home/codespace/.python/current/bin/streamlit",
+            "args": [
+                "run",
+                "${workspaceFolder}/app.py"
+            ],
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "/usr/local/lib/python3.x/site-packages"
+            }
+        }
+    ]
+}

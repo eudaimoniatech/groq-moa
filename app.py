@@ -14,26 +14,30 @@ from moa.agent.prompts import SYSTEM_PROMPT, REFERENCE_SYSTEM_PROMPT
 default_main_agent_config = {
     "main_model": "llama3-70b-8192",
     "cycles": 3,
-    "temperature": 0.1,
+    "temperature": 1.0,
     "system_prompt": SYSTEM_PROMPT,
-    "reference_system_prompt": REFERENCE_SYSTEM_PROMPT
+    "reference_system_prompt": REFERENCE_SYSTEM_PROMPT,
+    "max_tokens": 6000
 }
 
 default_layer_agent_config = {
     "layer_agent_1": {
-        "system_prompt": "Think through your response step by step. {helper_response}",
+        "system_prompt": "Think through your response step by step. Respond in Italian. {helper_response}",
         "model_name": "llama3-8b-8192",
-        "temperature": 0.3
+        "temperature": 2.0,
+        "max_tokens": 2048
     },
     "layer_agent_2": {
-        "system_prompt": "Respond with a thought and then your response to the question. {helper_response}",
+        "system_prompt": "Respond in Italian with a thought and then your response to the question. {helper_response}",
         "model_name": "gemma-7b-it",
-        "temperature": 0.7
+        "temperature": 2.0,
+        "max_tokens": 2048
     },
     "layer_agent_3": {
-        "system_prompt": "You are an expert at logic and reasoning. Always take a logical approach to the answer. {helper_response}",
-        "model_name": "llama3-8b-8192",
-        "temperature": 0.1
+        "system_prompt": "You are an expert at logic and reasoning. Always take a logical approach to the answer. Respond in Italian. {helper_response}",
+        "model_name": "llama3-70b-8192",
+        "temperature": 1.0,
+        "max_tokens": 2048
     },
 }
 
@@ -41,7 +45,7 @@ default_layer_agent_config = {
 rec_main_agent_config = {
     "main_model": "llama-3.1-70b-versatile",
     "cycles": 2,
-    "temperature": 0.1,
+    "temperature": 1.0,
     "system_prompt": SYSTEM_PROMPT,
     "reference_system_prompt": REFERENCE_SYSTEM_PROMPT
 }
@@ -343,3 +347,6 @@ if query := st.chat_input("Ask a question"):
         response = st.write_stream(ast_mess)
     
     st.session_state.messages.append({"role": "assistant", "content": response})
+
+# if __name__ == "__main__":
+#     main()
